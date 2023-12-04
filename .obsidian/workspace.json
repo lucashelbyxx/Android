@@ -18,8 +18,21 @@
                 "source": false
               }
             }
+          },
+          {
+            "id": "938a45e68f170744",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Kotlin/基础.md",
+                "mode": "source",
+                "source": false
+              }
+            }
           }
-        ]
+        ],
+        "currentTab": 1
       }
     ],
     "direction": "vertical"
@@ -85,7 +98,7 @@
             "state": {
               "type": "backlink",
               "state": {
-                "file": "Architecture/Jetpack MVVM.md",
+                "file": "Kotlin/基础.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -102,7 +115,7 @@
             "state": {
               "type": "outgoing-link",
               "state": {
-                "file": "Architecture/Jetpack MVVM.md",
+                "file": "Kotlin/基础.md",
                 "linksCollapsed": false,
                 "unlinkedCollapsed": true
               }
@@ -125,7 +138,7 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "Architecture/Jetpack MVVM.md"
+                "file": "Kotlin/基础.md"
               }
             }
           }
@@ -146,10 +159,10 @@
       "command-palette:打开命令面板": false
     }
   },
-  "active": "6fd3a1d6294a0d39",
+  "active": "938a45e68f170744",
   "lastOpenFiles": [
-    "Kotlin/基础.md",
     "Architecture/Jetpack MVVM.md",
+    "Kotlin/基础.md",
     "Architecture"
   ]
 }

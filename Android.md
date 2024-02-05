@@ -1,4 +1,21 @@
+优化
+
+- 内存
+  - [Android内存优化之OOM - 胡凯 (kesenhoo.github.io)](https://kesenhoo.github.io/android-performance-oom/)
+
+
+
+
+
 # 
+
+Language
+
+Java
+
+Kotlin
+
+C++
 
 动画
 

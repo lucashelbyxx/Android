@@ -172,10 +172,6 @@ Android 构建原生应用时使用的主要组件，以及构建和封装过程
 
   Hardware Buffer APIs
 
-  可以借助两个原生 API 来针对跨进程缓冲区管理创建自己的 pipelines 。您可以利用原生硬件缓冲区 API ([``](https://developer.android.com/ndk/reference/hardware__buffer_8h?hl=zh-cn)) 直接分配缓冲区，以针对跨进程缓冲区管理创建自己的流水线。您可以分配 `AHardwareBuffer`，并将其用于通过 `eglGetNativeClientBufferANDROID` 扩展指令集获取 [`EGLClientBuffer`](https://www.khronos.org/registry/EGL/extensions/KHR/EGL_KHR_image_base.txt) 资源类型。您可以将该缓冲区传递到 [`eglCreateImageKHR`](https://www.khronos.org/registry/EGL/extensions/KHR/EGL_KHR_image_base.txt)，以创建 [`EGLImage`](https://www.khronos.org/registry/EGL/extensions/KHR/EGL_KHR_image_base.txt) 资源类型，随后此资源类型可能会在支持的设备上通过 [`glEGLImageTargetTexture2DOES`](https://www.khronos.org/registry/OpenGL/extensions/OES/OES_EGL_image.txt) 与纹理绑定。此方法可用于创建可跨进程共享的纹理。
-
-  您可以利用原生硬件缓冲区 JNI API (`<android/hardware_buffer_jni.h>`) 获取一个 [`HardwareBuffer`](https://developer.android.com/reference/android/hardware/HardwareBuffer?hl=zh-cn) 对象（这是一个 [Parcelable](https://developer.android.com/reference/android/os/Parcelable?hl=zh-cn) 对象），以便在两个不同进程之间传输。如此，您的应用可获得与 [SurfaceFlinger](https://source.android.com/devices/graphics/arch-sf-hwc.html?hl=zh-cn#surfaceflinger) 相似的功能；例如，在不同进程之间创建自己的缓冲区队列，而无需访问内部 Android API。
-
 - Audio
 
   - AAudio
@@ -196,7 +192,7 @@ Android 构建原生应用时使用的主要组件，以及构建和封装过程
 
 #### 调试原生代码崩溃
 
-原生代码崩溃转储或 Tombstone，调试 Android 平台原生代码](https://source.android.com/devices/tech/debug/index.html?hl=zh-cn)
+原生代码崩溃转储或 Tombstone，[调试 Android 平台原生代码](https://source.android.com/devices/tech/debug/index.html?hl=zh-cn)
 
 常见崩溃类型及其调查方法，请参阅[诊断原生代码崩溃问题](https://source.android.com/devices/tech/debug/native-crash?hl=zh-cn)
 

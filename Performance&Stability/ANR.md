@@ -6,6 +6,10 @@
 
 
 
+[Android：如何避免 ANR？ · iamwent](https://iamwent.github.io/2017/03/06/how-to-avoid-anrs/)
+
+
+
 # trace
 
 trace文件中的状态是是CPP代码中定义的状态

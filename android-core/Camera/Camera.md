@@ -1,949 +1,490 @@
-[Camera2](https://developer.android.com/media/camera/choose-camera-library)
+# 概览
 
-[camera2 API](https://developer.android.com/reference/android/hardware/camera2/package-summary)
-
-[android/camera-samples](https://github.com/android/camera-samples)
+Android 的相机硬件抽象层 (HAL) 可将 [Camera 2](http://developer.android.com/reference/android/hardware/package-summary.html?hl=zh-cn) 中较高层级的相机框架 API 连接到底层的相机驱动程序和硬件。相机子系统包括相机管道组件的实现，而相机 HAL 可提供用于实现您的这些组件版本的接口。
 
 
 
-# Camera2
+![ape_fwk_camera2](assets/ape_fwk_camera2.png)
 
-## 1. 相机捕获会话和请求
+- 应用框架
 
-Camera capture sessions and requests
+  应用代码位于应用框架级别，它使用 [Camera 2](https://developer.android.com/reference/android/hardware/camera2/package-summary?hl=zh-cn) API 与相机硬件进行互动。在内部，此代码会调用相应的 [Binder](https://developer.android.com/reference/android/os/Binder.html?hl=zh-cn) 接口，以访问与相机互动的原生代码。
 
-一台设备可有多个摄像头。每颗摄像头都是一个  [`CameraDevice`](https://developer.android.com/reference/android/hardware/camera2/CameraDevice?hl=zh-cn)，并且 `CameraDevice` 可以同时输出多个数据流。
+- AIDL
 
-这样做的一个原因是，可以针对特定任务（如显示取景器）优化一个流（来自 CameraDevice 的连续相机帧），而其他流（stream）可用于拍摄照片或录制视频。这些数据流充当并行流水线（pipeline），处理来自相机的原始帧，一次处理一帧：
+  与 `CameraService` 关联的 binder 接口可在 [frameworks/av/camera/aidl/android/hardware](https://android.googlesource.com/platform/frameworks/av/+/master/camera/aidl/android/hardware/ICameraService.aidl) 中找到。生成的代码会调用较低级别的原生代码以获取对实体相机的访问权限，并返回用于在框架级别创建 [`CameraDevice`](https://developer.android.com/reference/android/hardware/camera2/CameraDevice?hl=zh-cn) 并最终创建 [`CameraCaptureSession`](https://developer.android.com/reference/android/hardware/camera2/CameraCaptureSession.html?hl=zh-cn) 对象的数据。
 
-<img src="assets/capture-sessions-requests-1.png" alt="capture-sessions-requests-1" style="zoom: 50%;" />
+- 原生框架
 
-并行处理性能限制取决于 CPU、GPU 或其他处理器的可用处理能力。如果 pipeline 处理跟不上传入的帧，就会开始丢弃帧。
+  此框架位于 `frameworks/av/` 中，并提供相当于 [`CameraDevice`](https://developer.android.com/reference/android/hardware/camera2/CameraDevice?hl=zh-cn) 和 [`CameraCaptureSession`](https://developer.android.com/reference/android/hardware/camera2/CameraCaptureSession?hl=zh-cn) 类的原生类。另请参阅 [NDK camera2 参考](https://developer.android.com/ndk/reference/group/camera?hl=zh-cn)。
 
-每个 pipeline 都有自己的输出格式。传入的 raw data 通过和每个 pipeline 关联的隐式逻辑自动转换成对应的输出格式。
+- binder IPC 接口
 
-可以使用 `CameraDevice` 创建一个特定于该 `CameraDevice` 的 [`CameraCaptureSession`](https://developer.android.com/reference/android/hardware/camera2/CameraCaptureSession?hl=zh-cn)。`CameraDevice` 必须使用 `CameraCaptureSession` 接收每个 raw 帧的帧配置。该配置用于指定相机属性，如自动对焦、光圈、效果和曝光。硬件限制，在任何时间，摄像头传感器中只有一个配置处于活跃状态，称“活跃”配置。
+  IPC binder 接口用于实现跨越进程边界的通信。调用相机服务的若干个相机 binder 类位于 `frameworks/av/camera/camera/aidl/android/hardware` 目录中。[`ICameraService`](https://android.googlesource.com/platform/frameworks/av/+/master/camera/aidl/android/hardware/ICameraService.aidl) 是相机服务的接口；[`ICameraDeviceUser`](https://android.googlesource.com/platform/frameworks/av/+/master/camera/aidl/android/hardware/camera2/ICameraDeviceUser.aidl) 是已打开的特定相机设备的接口；[`ICameraServiceListener`](https://android.googlesource.com/platform/frameworks/av/+/master/camera/aidl/android/hardware/ICameraServiceListener.aidl) 和 [`ICameraDeviceCallbacks`](https://android.googlesource.com/platform/frameworks/av/+/master/camera/aidl/android/hardware/camera2/ICameraDeviceCallbacks.aidl) 分别是对应用框架的 `CameraService` 和 `CameraDevice` 回调。
 
-`CameraCaptureSession` 描述了绑定到 `CameraDevice` 的所有可能的 pipeline。创建会话后，您无法添加或移除 pipeline。`CameraCaptureSession` 会维护一个 [`CaptureRequest`](https://developer.android.com/reference/android/hardware/camera2/CaptureRequest?hl=zh-cn) s的队列，该队列为活跃配置。
+- 相机服务
 
-`CaptureRequest` 会将配置添加到队列中，并选择一条、多个或所有可用 pipeline 从 `CameraDevice` 接收帧。您可以在一个 capture session 的生命周期内发送多个拍摄请求。每个请求都可以更改活跃配置和接收raw image的一组输出 pipeline。
+  位于 `frameworks/av/services/camera/libcameraservice/CameraService.cpp` 下的相机服务是与 HAL 进行互动的实际代码。
 
+- HAL
 
+  硬件抽象层定义了由相机服务调用、且您必须实现以确保相机硬件正常运行的标准接口。
 
-### 使用 Stream Use Cases 提高性能
+## 实现 HAL
 
-[`setStreamUseCase`](https://developer.android.com/reference/android/hardware/camera2/params/OutputConfiguration?hl=zh-cn#setStreamUseCase(long))
+HAL 位于相机驱动程序和更高级别的 Android 框架之间，它定义您必须实现的接口，以便应用可以正确地操作相机硬件。相机 HAL 的 [HIDL](https://source.android.com/docs/core/architecture/hidl?hl=zh-cn) 接口在 [hardware/interfaces/camera](https://android.googlesource.com/platform/hardware/interfaces/+/master/camera/) 中定义。
 
-Stream Use Cases 是提高 Camera2 capture session 性能的一种方法。它为设备提供更多信息来调整参数，从而为特定任务提供更好的相机体验。摄像头设备可以根据每个数据流的用户场景来优化相机硬件和软件流水线。
+典型的绑定式 HAL 必须实现以下 HIDL 接口：
 
-除了在 `CameraDevice.createCaptureRequest()` 中设置模板之外，在数据流用例中，还可以更详细地指定如何使用特定相机数据流。这样，相机硬件就可以根据适合特定用例的质量或延迟权衡来优化参数，例如微调、传感器模式或相机传感器设置。
+- [`ICameraProvider`](https://android.googlesource.com/platform/hardware/interfaces/+/refs/heads/master/camera/provider/2.4/ICameraProvider.hal)：用于枚举单个设备并管理其状态。
+- [`ICameraDevice`](https://android.googlesource.com/platform/hardware/interfaces/+/refs/heads/master/camera/device/3.2/ICameraDevice.hal)：相机设备接口。
+- [`ICameraDeviceSession`](https://android.googlesource.com/platform/hardware/interfaces/+/refs/heads/master/camera/device/3.2/ICameraDeviceSession.hal)：活跃的相机设备会话接口。
 
-stream use case 和 capture intent 的主要区别在于，前者让 camera device 根据每个 stream 的用户使用场景优化相机软硬件 pipeline，而后者主要是提示相机决定适用于整个 session 的最佳 3A 策略。摄像机设备根据 stream’s use cases 进行配置，如选择调整参数、选择传感器模式和构建图像处理流水线。捕捉意图随后用于微调 3A 行为，如调整 AE/AF 融合速度，捕捉意图在会话期间可能会发生变化。例如，对于具有 PREVIEW_VIDEO_STILL 用例流和 STILL_CAPTURE 用例流的会话，捕捉意图可能是 PREVIEW（具有快速 3A 融合速度和自动控制闪光测光功能，用于实时预览）、STILL_CAPTURE（具有最佳 3A 参数，用于静态照片捕捉）或 VIDEO_RECORD（具有较慢的 3A 融合速度，用于更好的视频回放体验）。
+参考 HIDL 实现适用于 [`CameraProvider.cpp`](https://android.googlesource.com/platform/hardware/interfaces/+/master/camera/provider/2.4/default/CameraProvider_2_4.cpp)、[`CameraDevice.cpp`](https://android.googlesource.com/platform/hardware/interfaces/+/master/camera/device/3.2/default/CameraDevice.cpp) 和 [`CameraDeviceSession.cpp`](https://android.googlesource.com/platform/hardware/interfaces/+/master/camera/device/3.2/default/CameraDeviceSession.cpp)。该实现封装了仍在使用[旧版 API](https://android.googlesource.com/platform/hardware/libhardware/+/master/include/hardware/camera3.h) 的旧 HAL。从 Android 8.0 开始，相机 HAL 实现必须使用 HIDL API；不支持使用旧版接口。
 
-数据流用例包括：
+**输入验证**
 
-- `DEFAULT`：涵盖所有现有应用行为。这相当于不设置任何数据流用例。
-- `PREVIEW`：建议用于取景器或应用内图像分析。
-- `STILL_CAPTURE`：针对高品质高分辨率拍摄进行了优化，不需要保持类似预览的帧速率。
-- `VIDEO_RECORD`：已针对高品质视频拍摄（包括高品质图像防抖）进行了优化（如果设备支持并由应用启用）。此选项可能会生成与实时相差极大的输出帧，以实现最高质量的防抖或其他处理。
-- `VIDEO_CALL`：建议用于容易耗电的长时间运行摄像头。
-- `PREVIEW_VIDEO_STILL`：建议用于社交媒体应用或单流用例。这是一种多用途的视频流
-- `VENDOR_START`：用于 OEM 定义的用例。
+由于 HAL 可以访问与相机服务不同的资源，因此两者之间的边界被视为安全性边界。这意味着，从相机服务传递的参数被视为不可信且未经过排错。为防止出现使攻击者能够升级其权限或访问其不应有权访问的数据的安全漏洞，相机 HAL 必须验证从相机服务传递到 HAL 的参数。这包括检查缓冲区长度值是否在允许的范围内，并在使用参数以及将参数传递给硬件或内核驱动程序之前对参数进行排错。
 
 
 
-### 创建 CameraCaptureSession
 
-创建 camera session，需要提供一个或多个你的应用可以写入输出帧的输出缓冲区。每个缓冲区表示一个 pipeline。必须在开始使用 camera 之前执行此操作，让 framework 可以配置设备的内部流水线，并为将帧发送到所需的输出目标分配内存缓冲区。
 
-代码段展示了如何准备具有两个输出缓冲区（一个属于 [`SurfaceView`](https://developer.android.com/reference/android/view/SurfaceView?hl=zh-cn)，另一个属于 [`ImageReader`](https://developer.android.com/reference/android/media/ImageReader?hl=zh-cn)）的相机会话。将 [`PREVIEW`](https://developer.android.com/training/camerax/preview?hl=zh-cn#scale-type) 数据流用例添加到 `previewSurface` 并将 [`STILL_CAPTURE`](https://developer.android.com/training/camerax/take-photo?hl=zh-cn#set-up-image-capture) 数据流用例添加到 `imReaderSurface`，可让设备进一步优化这些数据流。
+# 架构
 
-```kotlin
-// Retrieve the target surfaces, which might be coming from a number of places:
-// 1. SurfaceView, if you want to display the image directly to the user
-// 2. ImageReader, if you want to read each frame or perform frame-by-frame
-// analysis
-// 3. OpenGL Texture or TextureView, although discouraged for maintainability
-      reasons
-// 4. RenderScript.Allocation, if you want to do parallel processing
-val surfaceView = findViewById<SurfaceView>(...)
-val imageReader = ImageReader.newInstance(...)
+## Camera HAL
 
-// Remember to call this only *after* SurfaceHolder.Callback.surfaceCreated()
-val previewSurface = surfaceView.holder.surface
-val imReaderSurface = imageReader.surface
-val targets = listOf(previewSurface, imReaderSurface)
+Android 的相机硬件抽象层 (HAL) 可将 [android.hardware.camera2](https://developer.android.com/reference/android/hardware/camera2/package-summary?hl=zh-cn) 中较高级别的相机框架 API 连接到底层的相机驱动程序和硬件。从 Android 13 开始，相机 HAL 接口使用 [AIDL](https://source.android.com/docs/core/camera/camera3?hl=zh-cn#aidl-camera-hal) 进行开发。
 
-// Create a capture session using the predefined targets; this also involves
-// defining the session state callback to be notified of when the session is
-// ready
-// Setup Stream Use Case while setting up your Output Configuration.
-@RequiresApi(Build.VERSION_CODES.TIRAMISU)
-fun configureSession(device: CameraDevice, targets: List
+
+
+### AIDL camera HAL
+
+Android 13 及以上设备，相机框架包含对 AIDL 相机 HAL 的支持。该相机框架还支持 HIDL 相机 HAL，不过，在 Android 13 或更高版本中添加的相机功能只能通过 AIDL 相机 HAL 接口使用。如需在升级到 Android 13 或更高版本的设备上实现此类功能，设备制造商必须将其 HAL 进程从使用 HIDL 相机接口迁移到使用 AIDL 相机接口。
+
+如需了解 AIDL 的优势，请参阅[使用 AIDL 实现 HAL](https://source.android.com/docs/core/architecture/aidl/aidl-hals?hl=zh-cn#motivation)。
+
+
+
+**实现 AIDL camera HAL**
+
+AIDL camera HAL 实现, see [`hardware/google/camera/common/hal/aidl_service/`](https://cs.android.com/android/platform/superproject/+/main:hardware/google/camera/common/hal/aidl_service/).
+
+The AIDL camera HAL specifications are in the following locations:
+
+- Camera provider: [`hardware/interfaces/camera/provider/aidl/`](https://cs.android.com/android/platform/superproject/+/main:hardware/interfaces/camera/provider/aidl/)
+- Camera device: [`hardware/interfaces/camera/device/aidl/`](https://cs.android.com/android/platform/superproject/+/main:hardware/interfaces/camera/device/aidl/)
+- Camera metadata: [`hardware/interfaces/camera/metadata/aidl/`](https://cs.android.com/android/platform/superproject/+/main:hardware/interfaces/camera/metadata/aidl/)
+- Common data types: [`hardware/interfaces/camera/common/aidl/`](https://cs.android.com/android/platform/superproject/+/main:hardware/interfaces/camera/common/aidl/)
+
+对于迁移到 AIDL 的设备，设备制造商可能需要修改 [Android SELinux 政策 (sepolicy)](https://cs.android.com/android/platform/superproject/+/master:system/sepolicy/?hl=zh-cn) 和 RC 文件，具体取决于代码结构。
+
+
+
+**验证 AIDL cameraHAL**
+
+如需测试 AIDL 相机 HAL 实现，请确保设备已通过所有 CTS 和 VTS 测试。Android 13 引入了 AIDL VTS 测试 [`VtsAidlHalCameraProvider_TargetTest.cpp`](https://cs.android.com/android/platform/superproject/+/master:hardware/interfaces/camera/provider/aidl/vts/VtsAidlHalCameraProvider_TargetTest.cpp?hl=zh-cn)。
+
+
+
+### Camera HAL3 features
+
+重新设计 Android Camera API 目的在于提高应用对于 Android 设备上的相机子系统的控制能力，同时重新组织 API，提高其效率和可维护性。借助额外的控制能力，您可以轻松地在 Android 上构建高品质的相机应用，同时尽可能使用设备专用算法来最大限度提升质量和性能。
+
+相机子系统将多个运行模式整合为一个统一的视图，您可以使用这种视图实现之前的任何模式以及一些其他模式，例如连拍模式。这样一来，便可以提高用户对聚焦、曝光以及更多后期处理（例如降噪、对比度和锐化）效果的控制能力。此外，这种简化的视图还能够使应用开发者更轻松地使用相机的各种功能。
+
+API 将相机子系统塑造为一个管道，该管道可按照 1:1 的基准将传入的帧捕获请求转化为帧。这些请求包含有关帧的捕获和处理的所有配置信息，其中包括分辨率和像素格式；手动传感器、镜头和闪光灯控件；3A 操作模式；RAW 到 YUV 处理控制；统计信息生成等等。
+
+简单来说，应用框架从相机子系统请求帧，然后相机子系统将结果返回到输出流。此外，系统还会针对每组结果生成包含色彩空间和镜头遮蔽等信息的元数据。您可以将相机版本 3 看作相机版本 1 的单向流管道。它会将每个捕获请求转化为传感器捕获的一张图像，这张图像将被处理成：
+
+- 包含有关捕获的元数据的 Result 对象。
+- 图像数据的 1 到 N 个缓冲区，每个缓冲区会进入自己的目标 Surface。
+
+可能的输出 Surface 组经过预配置：
+
+- 每个 Surface 都是一个固定分辨率的图像缓冲区数据流的目标位置。
+- 一次只能将少量 Surface 配置为输出（约 3 个）。
+
+一个请求中包含所需的全部捕获设置，以及要针对该请求将图像缓冲区（从总配置组）推送到其中的输出 Surface 的列表。请求可以只发生一次（使用 `capture()`），也可以无限重复（使用 `setRepeatingRequest()`）。捕获的优先级高于重复请求的优先级。
+
+
+
+![camera_simple_model](assets/camera_simple_model.png)
+
+## HAL Subsystem
+
+### Request
+
+应用框架针对捕获的结果向相机子系统发出请求。一个请求对应一组结果。请求包含有关捕获和处理这些结果的所有配置信息。其中包括分辨率和像素格式；手动传感器、镜头和闪光灯控件；3A 操作模式；RAW 到 YUV 处理控件；以及统计信息的生成等。这样一来，便可更好地控制结果的输出和处理。一次可发起多个请求，而且提交请求时不会出现阻塞。请求始终按照接收的顺序进行处理。
+
+![camera_model](assets/camera_model.png)
+
+
+
+
+
+### HAL and camera subsystem
+
+相机子系统包括相机管道中组件的实现，例如 3A 算法和处理控件。相机 HAL 为您提供了用于实现您的这些组件版本的接口。为了保持多个设备制造商和图像信号处理器（ISP，也称为相机传感器）供应商之间的跨平台兼容性，相机管道模型是虚拟的，且不直接对应于任何真正的 ISP。不过，它与真正的处理管道足够相似，因此您可以有效地将其映射到硬件。此外，它足够抽象，可支持多种不同的算法和运算顺序，而不会影响质量、效率或跨设备兼容性。
+
+相机管道还支持应用框架可以启动来开启自动对焦等功能的触发器。它还会将通知发送回应用框架，以通知应用自动对焦锁定或错误等事件。
+
+![camera_hal](assets/camera_hal.png)
+
+请注意，上图所示的一些图像处理块在初始版本中没有明确定义。相机管道做出以下假设：
+
+- RAW Bayer 输出在 ISP 内部不经过任何处理。
+- 统计信息根据原始传感器数据生成。
+- 将原始传感器数据转换为 YUV 的各种处理块按任意顺序排列。
+- 当显示多个刻度和剪裁单元时，所有缩放器单元共享输出区域控件（数字缩放）。不过，每个单元都可能具有不同的输出分辨率和像素格式。
+
+**API 用途摘要**
+下面简要介绍了使用 Android Camera API 的步骤。如需查看这些步骤（包括 API 调用）的详细说明，请参阅“启动和预期操作顺序”部分。
+
+1. 监听和枚举相机设备。
+2. 打开设备并连接监听器。
+3. 配置目标使用情形的输出（如静态捕获、录制等）。
+4. 为目标使用情形创建请求。
+5. 捕获/重复请求和连拍。
+6. 接收结果元数据和图片数据。
+7. 切换使用情形时，返回到第 3 步。
+
+**HAL 操作摘要**
+
+- 捕获的异步请求来自于框架。
+- HAL 设备必须按顺序处理请求。对于每个请求，均生成输出结果元数据以及一个或多个输出图像缓冲区。
+- 请求和结果以及后续请求引用的信息流遵守先进先出规则。
+- 指定请求的所有输出的时间戳必须完全相同，以便框架可以根据需要将它们匹配在一起。
+- 所有捕获配置和状态（不包括 3A 例程）都包含在请求和结果中。
+
+![camera-hal-overview](assets/camera-hal-overview.png)
+
+### 启动和预期操作顺序
+
+本部分详细说明了使用 Camera API 时应遵循的步骤。有关 HIDL 接口的定义，请参阅 [platform/hardware/interfaces/camera/](https://android.googlesource.com/platform/hardware/interfaces/+/master/camera/)。
+
+**枚举、打开相机设备并创建有效会话**
+
+1. 初始化后，框架开始监听实现 `ICameraProvider` 接口的任何现有相机提供程序。如果存在一个或多个此类提供程序，框架将尝试建立连接。
+2. 框架通过 `ICameraProvider::getCameraIdList()` 枚举相机设备。
+3. 框架通过调用相应的 `ICameraProvider::getCameraDeviceInterface_VX_X()` 来实例化一个新的 `ICameraDevice`。
+4. 框架调用 `ICameraDevice::open()` 来创建一个新的有效捕获会话 ICameraDeviceSession。
+
+
+
+**使用有效相机会话**
+
+1. 框架调用 `ICameraDeviceSession::configureStreams()` 并传入到 HAL 设备的输入/输出流列表。
+2. 框架通过调用 `ICameraDeviceSession::constructDefaultRequestSettings()` 为某些用例请求默认设置。这可能会在 `ICameraDevice::open` 创建 `ICameraDeviceSession` 之后的任何时间发生。
+3. 框架通过基于某一组默认设置的设置以及框架之前注册的至少一个输出流来构造第一个捕获请求并将其发送到 HAL。此请求通过 `ICameraDeviceSession::processCaptureRequest()` 发送到 HAL。HAL 必须阻止此调用返回，直到准备好发送下一个请求为止。
+4. 框架继续提交请求并根据需要调用 `ICameraDeviceSession::constructDefaultRequestSettings()` 以获取其他用例的默认设置缓冲区。
+5. 当请求捕获开始（传感器开始曝光以进行捕获）时，HAL 会调用 `ICameraDeviceCallback::notify()` 并显示 SHUTTER 消息，包括帧号和开始曝光的时间戳。此通知回调不必在对请求第一次调用 `processCaptureResult()` 之前发生，但直到针对相应的捕获调用 `notify()` 之后，才会向应用提供有关该捕获的结果。
+6. 经过一定的流水线延迟后，HAL 开始使用 `ICameraDeviceCallback::processCaptureResult()` 将完成的捕获返回到框架。这些捕获按照与提交请求相同的顺序返回。一次可发起多个请求，具体取决于相机 HAL 设备的管道深度。
+
+一段时间后，会出现以下某种情况：
+
+- 框架可能会停止提交新的请求，等待现有捕获完成（所有缓冲区都已填充，所有结果都已返回），然后再次调用 `ICameraDeviceSession::configureStreams()`。这会重置相机硬件和管道，以获得一组新的输入/输出流。可重复使用先前配置中的部分信息流。如果至少还有一个已注册的输出流，框架就会从发送到 HAL 的第一个捕获请求继续。（否则，需要先调用 `ICameraDeviceSession::configureStreams()`。）
+- 框架可能会调用 `ICameraDeviceSession::close()` 以结束相机会话。当框架中没有其他处于有效状态的调用时，可能随时会调用此函数；不过，在所有发起的捕获完成（所有结果都已返回，所有缓冲区都已填充）之前，调用可能会阻塞。`close()` 调用返回后，不允许再从 HAL 对 `ICameraDeviceCallback` 进行调用。一旦进行 `close()` 调用，框架便不能再调用其他任何 HAL 设备函数。
+- 在发生错误或其他异步事件时，HAL 必须调用 `ICameraDeviceCallback::notify()` 并返回相应的错误/事件消息。从严重的设备范围错误通知返回后，HAL 的行为方式应像对其调用了 `close()` 一样。但是，HAL 必须在调用 `notify()` 之前取消或完成所有待处理的捕获，以便在调用 `notify()` 并返回严重错误时，框架不会收到来自设备的更多回调。在 `notify()` 方法从严重错误消息返回后，`close()` 之外的方法应返回 -ENODEV 或 NULL。
+
+![camera-ops-flow](assets/camera-ops-flow.png)
+
+### 硬件级别
+
+相机设备可以根据其功能实现多个硬件级别。如需了解详情，请参阅[支持的硬件级别](https://developer.android.com/reference/android/hardware/camera2/CameraCharacteristics?hl=zh-cn#INFO_SUPPORTED_HARDWARE_LEVEL)。
+
+### 应用捕获请求、3A 控件和处理管道之间的交互
+
+根据 3A 控件块中的设置，相机管道会忽略应用捕获请求中的某些参数，而改用 3A 控件例程提供的值。例如，启用自动曝光后，传感器的曝光时间、帧时长和感光度参数由平台 3A 算法控制，所有应用指定的值都会被忽略。必须在输出元数据中报告由 3A 例程为帧选择的值。下表描述了 3A 控件块的不同模式以及由这些模式控制的属性。有关这些属性的定义，请参阅 [platform/system/media/camera/docs/docs.html](https://android.googlesource.com/platform/system/media/+/master/camera/docs/docs.html) 文件。
+
+| 参数                               | 状态                  | 受控制的属性                                                 |
+| :--------------------------------- | :-------------------- | :----------------------------------------------------------- |
+| android.control.aeMode             | OFF                   | 无                                                           |
+|                                    | ON                    | android.sensor.exposureTime android.sensor.frameDuration android.sensor.sensitivity android.lens.aperture（如果支持的话） android.lens.filterDensity（如果支持的话） |
+|                                    | ON_AUTO_FLASH         | 均已开启，还有 android.flash.firingPower、android.flash.firingTime 和 android.flash.mode |
+|                                    | ON_ALWAYS_FLASH       | 与 ON_AUTO_FLASH 相同                                        |
+|                                    | ON_AUTO_FLASH_RED_EYE | 与 ON_AUTO_FLASH 相同                                        |
+| android.control.awbMode            | OFF                   | 无                                                           |
+|                                    | WHITE_BALANCE_*       | android.colorCorrection.transform。如果 android.colorCorrection.mode 为 FAST 或 HIGH_QUALITY，则进行特定于平台的调整。 |
+| android.control.afMode             | OFF                   | 无                                                           |
+|                                    | FOCUS_MODE_*          | android.lens.focusDistance                                   |
+| android.control.videoStabilization | OFF                   | 无                                                           |
+|                                    | ON                    | 可调整 android.scaler.cropRegion 来实现视频防抖              |
+| android.control.mode               | OFF                   | AE、AWB 和 AF 处于停用状态                                   |
+|                                    | AUTO                  | 单独使用 AE、AWB 和 AF 设置                                  |
+|                                    | SCENE_MODE_*          | 可替换上述所有参数。各个 3A 控件均处于停用状态。             |
+
+在图 2 中，图像处理块中的控件都以类似的原理操作，并且每个块一般都具有 3 种模式：
+
+- OFF：该处理块处于停用状态。无法停用去马赛克、色彩校正和色调曲线调整块。
+- FAST：与 OFF 模式相比，在这种模式下，处理块可能不会降低输出帧速率，但是考虑到限制条件，它应该会产生能够产生的最优质输出。通常，该模式会用于预览或视频录制模式，或用于连拍静态图像。在一些设备上，该模式可能等同于 OFF 模式（进行任何处理都会降低帧速率）；而在另外一些设备上，该模式可能等同于 HIGH_QUALITY 模式（最佳质量仍不会降低帧速率）。
+- HIGH_QUALITY：在这种模式下，处理块应尽可能产生最优质结果，根据需要降低输出帧速率。通常，该模式会用于拍摄优质静态图像。一些块包括可以被选中的手动控件（而非 FAST 或 HIGH_QUALITY）。例如，色彩校正块支持颜色变换矩阵，而色调曲线调整支持任意的全局色调映射曲线。
+
+相机子系统可以支持的最大帧速率受到多种因素的影响：
+
+- 所请求的输出图像流的分辨率
+- 成像器上像素组合/跳过模式的可用性
+- 成像器接口的带宽
+- 各种 ISP 处理块的带宽
+
+由于这些因素在不同的 ISP 和传感器之间可能有很大差异，因此相机 HAL 接口会设法将带宽限制抽象为尽可能简单的模型。显示的模型具有以下特性：
+
+- 考虑到应用的请求输出流大小，图像传感器始终配置为输出尽可能最小的分辨率。最小分辨率定义为至少与请求的最大输出流一样大。
+- 因为任何请求都可能使用当前配置的任意或所有输出流，所以传感器和 ISP 必须配置为支持将单个捕获同时扩展到所有信息流。
+- 对于不包含 JPEG 流的请求，JPEG 流表现得像经过处理的 YUV 流一样；在直接引用它们的请求中，它们用作 JPEG 流。
+- JPEG 处理器可以并行运行到相机管道的剩余部分，但不能一次处理多个捕获。
+
+
+
+# 核心概念
+
+## 3A Modes and State
+
+实际的 3A 算法取决于 HAL 实现，但高级状态机描述由 HAL 接口定义，以支持 HAL 设备和框架就 3A 的当前状态进行通信并触发 3A 事件。
+
+设备开启时，所有单独的 3A 状态都必须为 STATE_INACTIVE。流配置不会重置 3A。例如，在整个 `configure()` 调用期间必须保持焦点锁定。
+
+若要触发 3A 操作，只需在下一个请求的设置中设置相关触发条目，以指示触发开始即可。例如，若要触发自动对焦扫描的启动操作，只需将相应请求的 ANDROID_CONTROL_AF_TRIGGER 条目设为 ANDROID_CONTROL_AF_TRIGGER_START 即可；若要触发自动对焦扫描的取消操作，只需将 ANDROID_CONTROL_AF_TRIGGER 设为 ANDROID_CONTRL_AF_TRIGGER_CANCEL 即可。
+
+
+
+3A 由 ANDROID_CONTROL_MODE 设置控制。该设置选项包括关闭 3A (ANDROID_CONTROL_MODE_OFF)、正常自动 (AUTO) 模式 (ANDROID_CONTROL_MODE_AUTO)，以及使用取景模式设置 (ANDROID_CONTROL_USE_SCENE_MODE)：
+
+- 在 OFF 模式下，单个的自动对焦 (AF)、自动曝光 (AE) 和自动白平衡 (AWB) 模式都会有效地关闭，且任何捕获控制都不会被 3A 例程覆盖。
+- 在 AUTO 模式下，AF、AE 和 AWB 模式都会运行各自的独立算法，且具有自己的模式、状态和触发元数据条目，具体如下一节所示。
+- 在 USE_SCENE_MODE 下，必须使用 ANDROID_CONTROL_SCENE_MODE 条目的值来确定 3A 例程的行为。在除 FACE_PRIORITY 以外的 SCENE_MODE 下，HAL 必须将 ANDROID_CONTROL_AE/AWB/AF_MODE 的值替换为它倾向于让所选的 SCENE_MODE 使用的模式。例如，HAL 可能倾向于在 SCENE_MODE_NIGHT 下使用 CONTINUOUS_FOCUS AF 模式。当必须忽略这些取景模式下的场景时，用户可随意选择 AE/AWB/AF_MODE。
+- 对于 SCENE_MODE_FACE_PRIORITY，AE/AWB/AFMODE 控件的工作方式与在 ANDROID_CONTROL_MODE_AUTO 模式下相同，但 3A 例程必须偏向测光，并对焦到场景中任何已检测到的人脸上。
+
+
+
+自动对焦设置和结果条目
+
+自动曝光
+
+自动白平衡
+
+
+
+## Camera Debugging
+
+watch
+
+
+
+dumpsys
+
+`dumpsys` 命令提供相机服务的一系列调试信息。以下命令可通过相机服务捕获整个调试转储：
+
 ```
-
-此时还未定义相机的 active configuration。会话配置后，可以创建并分发 capture requests 来执行此操作。
-
-在将输入写入其缓冲区时，应用于输入的转换由每个目标的类型决定，该类型必须是 [`Surface`](https://developer.android.com/reference/android/view/Surface?hl=zh-cn)。Android 框架知道如何将活动配置中的原始图像转换为适合每个目标的格式。转换由特定 `Surface` 的像素格式和大小控制。
-
- [`createCaptureSession()`](https://developer.android.com/reference/android/hardware/camera2/CameraDevice#createCaptureSession(android.hardware.camera2.params.SessionConfiguration)) 
-
-
-
-### Single CaptureRequest
-
-每帧所用的配置编码在 CaptureRequest 中，发送到 camera。要创建一个 capture request，可以使用 预定义的 [templates](https://developer.android.com/reference/android/hardware/camera2/CameraDevice#constants_1) ，也可以使用 `TEMPLATE_MANUAL` 进行完全控制。选择模板时，需要提供一个或多个要用于请求的输出缓冲区。您只能使用已在要使用的捕获会话上定义的缓冲区。
-
-捕获请求使用  [builder pattern](https://developer.android.com/reference/android/hardware/camera2/CaptureRequest.Builder)，开发者可以设置[许多不同的选项](https://developer.android.com/reference/android/hardware/camera2/CaptureRequest?hl=zh-cn#fields_1)，包括[自动曝光](https://developer.android.com/reference/android/hardware/camera2/CaptureRequest?hl=zh-cn#CONTROL_AE_MODE)、[自动对焦](https://developer.android.com/reference/android/hardware/camera2/CaptureRequest?hl=zh-cn#CONTROL_AF_MODE)和[镜头光圈](https://developer.android.com/reference/android/hardware/camera2/CaptureRequest?hl=zh-cn#LENS_APERTURE)。设置字段之前，确保特定选项可用于设备，调用[`CameraCharacteristics.getAvailableCaptureRequestKeys()`](https://developer.android.com/reference/android/hardware/camera2/CameraCharacteristics?hl=zh-cn#getAvailableCaptureRequestKeys())，并通过检查相应的相机特性（例如[可用的自动曝光模式](https://developer.android.com/reference/android/hardware/camera2/CameraCharacteristics?hl=zh-cn#CONTROL_AE_AVAILABLE_MODES)）支持所需的值。
-
-使用预览模板创建 `SurfaceView` 的拍摄请求，使用 [`CameraDevice.TEMPLATE_PREVIEW`](https://developer.android.com/reference/android/hardware/camera2/CameraDevice?hl=zh-cn#TEMPLATE_PREVIEW)
-
-```kotlin
-val session: CameraCaptureSession = ...  // from CameraCaptureSession.StateCallback
-val captureRequest = session.device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-captureRequest.addTarget(previewSurface)
-```
-
-定义拍摄请求后，您现在可以将其[分派](https://developer.android.com/reference/android/hardware/camera2/CameraCaptureSession?hl=zh-cn#capture(android.hardware.camera2.CaptureRequest, android.hardware.camera2.CameraCaptureSession.CaptureCallback, android.os.Handler))到相机会话：
-
-```kotlin
-val session: CameraCaptureSession = ...  // from CameraCaptureSession.StateCallback
-val captureRequest: CaptureRequest = ...  // from CameraDevice.createCaptureRequest()
-
-// The first null argument corresponds to the capture callback, which you
-// provide if you want to retrieve frame metadata or keep track of failed capture
-// requests that can indicate dropped frames; the second null argument
-// corresponds to the Handler used by the asynchronous callback, which falls
-// back to the current thread's looper if null
-session.capture(captureRequest.build(), null, null)
-```
-
-当某个输出帧被放入特定缓冲区时，会触发[捕获回调](https://developer.android.com/reference/android/hardware/camera2/CameraCaptureSession.CaptureCallback?hl=zh-cn)。在许多情况下，处理包含的帧时会触发其他回调（例如 [`ImageReader.OnImageAvailableListener`](https://developer.android.com/reference/android/media/ImageReader.OnImageAvailableListener?hl=zh-cn)）。此时，您可以从指定的缓冲区检索图像数据。
-
-
-
-### Repeat CaptureRequests
-
-Single CaptureRequest 不适用于显示实时预览和视频。这些场景下，你需要接受连续的 frame stream。
-
-```kotlin
-val session: CameraCaptureSession = ...  // from CameraCaptureSession.StateCallback
-val captureRequest: CaptureRequest = ...  // from CameraDevice.createCaptureRequest()
-
-// This keeps sending the capture request as frequently as possible until the
-// session is torn down or session.stopRepeating() is called
-// session.setRepeatingRequest(captureRequest.build(), null, null)
-```
-
-Repeat CaptureRequest 会让设备使用提供的  `CaptureRequest` 中的设置持续拍摄图片。Camera2 API 还允许用户通过发送重复 `CaptureRequests` 从相机拍摄视频，如 GitHub 上的此 [Camera2 示例](https://github.com/android/camera-samples/tree/master/Camera2Video)代码库所示。它还可以通过使用重复连拍 `CaptureRequests` 捕获高速（慢动作）视频来渲染慢动作视频，如 GitHub 上的 [Camera2 慢动作视频示例应用](https://github.com/android/camera-samples/tree/master/Camera2SlowMotion)中所示。
-
-
-
-### Interleave CaptureRequests
-
-如需在 Repeat CaptureRequest 处于活跃状态时发送第二个 CaptureRequest，例如显示取景器并允许用户拍摄照片，你无需停止正在进行的 Repeat CaptureRequest。相反，可以在 repeating request 运行时发出 non-repeating capture request。
-
-首次创建会话时，需要将使用的任何输出缓冲区配置为相机会话的一部分。重复请求的优先级低于单帧或burst request：
-
-```kotlin
-val session: CameraCaptureSession = ...  // from CameraCaptureSession.StateCallback
-
-// Create the repeating request and dispatch it
-val repeatingRequest = session.device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-repeatingRequest.addTarget(previewSurface)
-session.setRepeatingRequest(repeatingRequest.build(), null, null)
-
-// Some time later...
-
-// Create the single request and dispatch it
-// NOTE: This can disrupt the ongoing repeating request momentarily
-val singleRequest = session.device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
-singleRequest.addTarget(imReaderSurface)
-session.capture(singleRequest.build(), null, null)
-```
-
-该方法缺点是：无法确切知道 single request 何时发生。A是重复捕获请求，B是单帧捕获请求，会话处理请求队列如下：
-
-![capture-sessions-requests-2](assets/capture-sessions-requests-2.png)
-
-无法保证请求 B 激活之前 A 发出的最后一个重复请求与下次再次使用 A 之间的延迟，因此可能会遇到一些跳帧。改善措施：
-
-- 将请求 A 的输出目标添加到请求 B。这样，当 B 的帧准备就绪时，它就会被复制到 A 的输出目标中。例如，在进行视频快照以保持稳定的帧速率时，这一点至关重要。前面代码中，在构建请求之前添加 `singleRequest.addTarget(previewSurface)` 。
-- 使用专为该特定场景设计的模板组合，例如零快门延迟。
-
-
-
-## 2. 相机镜头和功能
-
-Camera lenses and capabilities
-
-如何列出相机镜头及其功能，以便您在应用中决定在给定情况下使用哪种镜头。以下代码段会检索所有相机的列表：
-
-```kotlin
-try {
-    val cameraIdList = cameraManager.cameraIdList // may be empty
-
-    // iterate over available camera devices
-    for (cameraId in cameraIdList) {
-        val characteristics = cameraManager.getCameraCharacteristics(cameraId)
-        val cameraLensFacing = characteristics.get(CameraCharacteristics.LENS_FACING)
-        val cameraCapabilities = characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)
-
-        // check if the selected camera device supports basic features
-        // ensures backward compatibility with the original Camera API
-        val isBackwardCompatible = cameraCapabilities?.contains(
-            CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_BACKWARD_COMPATIBLE) ?: false
-        ...
-    }
-} catch (e: CameraAccessException) {
-    e.message?.let { Log.e(TAG, it) }
-    ...
-}
-```
-
- `cameraLensFacing` 描述相机相对于设备屏幕朝向的方向，并具有以下值之一：[`CameraMetadata.LENS_FACING_FRONT`](https://developer.android.com/reference/android/hardware/camera2/CameraMetadata?hl=zh-cn#LENS_FACING_FRONT)、[`CameraMetadata.LENS_FACING_BACK`](https://developer.android.com/reference/android/hardware/camera2/CameraMetadata?hl=zh-cn#LENS_FACING_BACK)、[`CameraMetadata.LENS_FACING_EXTERNAL`](https://developer.android.com/reference/android/hardware/camera2/CameraMetadata?hl=zh-cn#LENS_FACING_EXTERNAL)
-
-
-
-### 选择合理的默认配置
-
-默认打开特定摄像头（如果可用）。例如，自拍应用可能会打开前置摄像头，而增强现实应用可能会从后置摄像头启动。以下函数会返回面向指定方向的第一个镜头：
-
-```kotlin
-fun getFirstCameraIdFacing(cameraManager: CameraManager,
-                           facing: Int = CameraMetadata.LENS_FACING_BACK): String? {
-    try {
-        // Get list of all compatible cameras
-        val cameraIds = cameraManager.cameraIdList.filter {
-            val characteristics = cameraManager.getCameraCharacteristics(it)
-            val capabilities = characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)
-            capabilities?.contains(
-                    CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_BACKWARD_COMPATIBLE) ?: false
-        }
-
-        // Iterate over the list of cameras and return the first one matching desired
-        // lens-facing configuration
-        cameraIds.forEach {
-            val characteristics = cameraManager.getCameraCharacteristics(it)
-            if (characteristics.get(CameraCharacteristics.LENS_FACING) == facing) {
-                return it
-            }
-        }
-
-        // If no camera matched desired orientation, return the first one from the list
-        return cameraIds.firstOrNull()
-    } catch (e: CameraAccessException) {
-        e.message?.let { Log.e(TAG, it) }
-    }
-}
-```
-
-
-
-### 切换摄像头
-
-许多设备有多个朝同一方向的摄像头。有些甚至配有外接 USB 摄像头。如需为用户提供一个界面，使其能够在不同的朝向摄像头之间切换，请针对每种可能的镜头朝向配置选择第一个可用的摄像头。
-
-虽然没有用于选择下一个摄像头的通用逻辑，但以下代码适用于大多数用例：
-
-```kotlin
-fun filterCompatibleCameras(cameraIds: Array<String>,
-                            cameraManager: CameraManager): List<String> {
-    return cameraIds.filter {
-        val characteristics = cameraManager.getCameraCharacteristics(it)
-        characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)?.contains(
-                CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_BACKWARD_COMPATIBLE) ?: false
-    }
-}
-
-fun filterCameraIdsFacing(cameraIds: List<String>, cameraManager: CameraManager,
-                          facing: Int): List<String> {
-    return cameraIds.filter {
-        val characteristics = cameraManager.getCameraCharacteristics(it)
-        characteristics.get(CameraCharacteristics.LENS_FACING) == facing
-    }
-}
-
-fun getNextCameraId(cameraManager: CameraManager, currCameraId: String? = null): String? {
-    // Get all front, back and external cameras in 3 separate lists
-    val cameraIds = filterCompatibleCameras(cameraManager.cameraIdList, cameraManager)
-    val backCameras = filterCameraIdsFacing(
-            cameraIds, cameraManager, CameraMetadata.LENS_FACING_BACK)
-    val frontCameras = filterCameraIdsFacing(
-            cameraIds, cameraManager, CameraMetadata.LENS_FACING_FRONT)
-    val externalCameras = filterCameraIdsFacing(
-            cameraIds, cameraManager, CameraMetadata.LENS_FACING_EXTERNAL)
-
-    // The recommended order of iteration is: all external, first back, first front
-    val allCameras = (externalCameras + listOf(
-            backCameras.firstOrNull(), frontCameras.firstOrNull())).filterNotNull()
-
-    // Get the index of the currently selected camera in the list
-    val cameraIndex = allCameras.indexOf(currCameraId)
-
-    // The selected camera may not be in the list, for example it could be an
-    // external camera that has been removed by the user
-    return if (cameraIndex == -1) {
-        // Return the first camera from the list
-        allCameras.getOrNull(0)
-    } else {
-        // Return the next camera from the list, wrap around if necessary
-        allCameras.getOrNull((cameraIndex + 1) % allCameras.size)
-    }
-}
-```
-
-极端情况，请参阅 [`CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA`](https://developer.android.com/reference/android/hardware/camera2/CameraMetadata?hl=zh-cn#REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA)。
-
-
-
-## 3. 同时使用多个 camera streams
-
-Multiple camera streams simultaneously
-
-相机可以同时使用多个 frame stream。某些情况下，不同 stream 需要不同的 frame resolution 或 pixel format。典型场景：
-
-- **视频录制**：一个流用于预览，另一个流进行编码并保存至文件中。
-- **条形码扫描**：一个流用于预览，另一个流用于条形码检测。
-- **计算摄影**：一个用于预览的流，另一个用于人脸/场景检测。
-
-处理帧时会产生非常重要的性能成本，而在执行并行流或流水线处理时，成本会成倍增加。
-
-CPU、GPU 和 DSP 等资源或许能够利用框架的 [reprocessing](https://developer.android.com/reference/android/hardware/camera2/CameraCaptureSession?hl=zh-cn#setRepeatingRequest(android.hardware.camera2.CaptureRequest, android.hardware.camera2.CameraCaptureSession.CaptureCallback, android.os.Handler)) 功能，但内存等资源将线性增长。
-
-
-
-### Multiple targets per request
-
-可以将多个摄像头视频流合并到单个 [`CameraCaptureRequest`](https://developer.android.com/reference/android/hardware/camera2/CaptureRequest?hl=zh-cn) 中。以下代码说明了如何设置相机会话，其中包含一个用于相机预览的数据流和另一个用于图像处理的数据流：
-
-```kotlin
-val session: CameraCaptureSession = ...  // from CameraCaptureSession.StateCallback
-
-// You will use the preview capture template for the combined streams
-// because it is optimized for low latency; for high-quality images, use
-// TEMPLATE_STILL_CAPTURE, and for a steady frame rate use TEMPLATE_RECORD
-val requestTemplate = CameraDevice.TEMPLATE_PREVIEW
-val combinedRequest = session.device.createCaptureRequest(requestTemplate)
-
-// Link the Surface targets with the combined request
-combinedRequest.addTarget(previewSurface)
-combinedRequest.addTarget(imReaderSurface)
-
-// In this simple case, the SurfaceView gets updated automatically. ImageReader
-// has its own callback that you have to listen to in order to retrieve the
-// frames so there is no need to set up a callback for the capture request
-session.setRepeatingRequest(combinedRequest.build(), null, null)
-```
-
-正确配置目标 surface，此代码将仅生成达到由 [`StreamComfigurationMap.GetOutputMinFrameDuration(int, Size)`](https://developer.android.com/reference/android/hardware/camera2/params/StreamConfigurationMap?hl=zh-cn#getOutputMinFrameDuration(int, android.util.Size)) 和 [`StreamComfigurationMap.GetOutputStallDuration(int, Size)`](https://developer.android.com/reference/android/hardware/camera2/params/StreamConfigurationMap?hl=zh-cn#getOutputStallDuration(int, android.util.Size)) 确定的最低 FPS 的数据流。 实际性能因设备而异，但 Android 根据以下三个变量提供一些支持特定组合的保证：*输出类型*、*输出大小*和*硬件级别*。
-
-使用不受支持的变量组合可能会以较低的帧速率工作；如果无法做到这点，则会触发某个失败回调。[`createCaptureSession`](https://developer.android.com/reference/android/hardware/camera2/CameraDevice?hl=zh-cn#createCaptureSession(java.util.List, android.hardware.camera2.CameraCaptureSession.StateCallback, android.os.Handler)) 文档介绍了保证能正常运行的机制。
-
-
-
-### Output type、Output size
-
-*输出类型*是指帧的编码格式。值包括 PRIV、YUV、JPEG 和 RAW。[format](https://developer.android.com/reference/android/hardware/camera2/CameraDevice#createCaptureSession(android.hardware.camera2.params.SessionConfiguration))
-
-选择应用的输出类型时，如果目标是最大限度提高兼容性，则使用 [`ImageFormat.YUV_420_888`](https://developer.android.com/reference/android/graphics/ImageFormat?hl=zh-cn#YUV_420_888) 进行帧分析，使用 [`ImageFormat.JPEG`](https://developer.android.com/reference/android/graphics/ImageFormat?hl=zh-cn#JPEG) 进行静态图片。对于预览和录制场景，可能会使用 [`SurfaceView`](https://developer.android.com/reference/android/view/SurfaceView?hl=zh-cn)、[`TextureView`](https://developer.android.com/reference/android/view/TextureView?hl=zh-cn)、[`MediaRecorder`](https://developer.android.com/reference/android/media/MediaRecorder?hl=zh-cn)、[`MediaCodec`](https://developer.android.com/reference/android/media/MediaCodec?hl=zh-cn) 或 [`RenderScript.Allocation`](https://developer.android.com/reference/android/renderscript/Allocation?hl=zh-cn)。在这种情况下，不要指定图片格式。为了确保兼容性，无论内部使用的格式如何，它都将计为 [`ImageFormat.PRIVATE`](https://developer.android.com/reference/android/graphics/ImageFormat?hl=zh-cn#PRIVATE)。如需在给定设备的 [`CameraCharacteristics`](https://developer.android.com/reference/android/hardware/camera2/CameraCharacteristics?hl=zh-cn) 查询设备支持的格式，使用以下代码：
-
-```kotlin
-val characteristics: CameraCharacteristics = ...
-val supportedFormats = characteristics.get(
-    CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP).outputFormats
+adb shell dumpsys media.camera
 ```
 
 
 
-[`StreamConfigurationMap.getOutputSizes()`](https://developer.android.com/reference/android/hardware/camera2/params/StreamConfigurationMap?hl=zh-cn#getOutputSizes(int)) 列出所有可用的*输出大小*，只有其中两种大小与兼容性相关：`PREVIEW` 和 `MAXIMUM`。尺寸即为上限。如果大小为 `PREVIEW` 的内容有效，则小于 `PREVIEW` 的内容也有效。`MAXIMUM` 也是如此。[`CameraDevice`](https://developer.android.com/reference/android/hardware/camera2/CameraDevice?hl=zh-cn) 
+## Errors and Streams
 
-可用的输出大小取决于所选的格式。查询可用的输出大小
+## Metadata and Controls
 
-```kotlin
-val characteristics: CameraCharacteristics = ...
-val outputFormat: Int = ...  // such as ImageFormat.JPEG
-val sizes = characteristics.get(
-    CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-    .getOutputSizes(outputFormat)
-```
 
-在相机预览和录制用例中，使用目标类确定支持的尺寸。格式将由相机框架本身处理：
 
-```kotlin
-val characteristics: CameraCharacteristics = ...
-val targetClass: Class <T> = ...  // such as SurfaceView::class.java
-val sizes = characteristics.get(
-    CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-    .getOutputSizes(targetClass)
-```
+## Output and Cropping
 
-`PREVIEW` 是指与设备的屏幕分辨率或 1080p (1920x1080)（以较低者为准）匹配的最佳尺寸。宽高比可能与屏幕的宽高比不完全一致，因此可能需要对视频流应用遮幅式黑边或剪裁，以便在全屏模式下显示视频流。为了获得合适的预览大小，请将可用的输出大小与显示大小进行比较，同时考虑到显示画面可能会旋转。
+### Output streams
 
+相机子系统仅在基于 ANativeWindow 的管道上运行，适用于所有分辨率和输出格式。可以一次配置多个流，以将单个帧发送到许多目标，例如 GPU、视频编码器、RenderScript 或应用程序可见缓冲区（RAW Bayer、处理后的 YUV 缓冲区或 JPEG 编码缓冲区）。
 
+出于优化的目的，这些输出流必须提前配置，而且只有有限的输出流可同时存在。这样一来，就可以预先分配内存缓冲区并配置相机硬件，以便在列出多个或者不同输出管道的情况下提交请求时，不会出现请求延迟执行的情况。
 
-### Summary
 
-通过输出类型、输出大小和硬件级别，可以确定哪些流组合是有效的。 `LEGACY` 硬件级别的 `CameraDevice` 支持的配置：
 
-![format-size-use](assets/format-size-use.png)
+### Cropping
 
-`LEGACY` 是可能的最低硬件级别。每台支持 Camera2 的设备使用正确的配置，以及没有过多的开销限制性能（内存、CPU 或散热限制）的情况下，可以使用最多三个同时输出流。
 
-应用还需要配置目标输出缓冲区。例如，如需以硬件级别为 `LEGACY` 的设备为目标，您可以设置两个目标输出 surface，一个使用 `ImageFormat.PRIVATE`，另一个使用 `ImageFormat.YUV_420_888`。这是使用 `PREVIEW` 尺寸时受支持的组合。获取相机 ID 所需的预览尺寸需要以下代码：
 
-```kotlin
-val characteristics: CameraCharacteristics = ...
-val context = this as Context  // assuming you are inside of an activity
+### Reprocessing
 
-val surfaceViewSize = getPreviewOutputSize(
-    context, characteristics, SurfaceView::class.java)
-val imageReaderSize = getPreviewOutputSize(
-    context, characteristics, ImageReader::class.java, format = ImageFormat.YUV_420_888)
-```
+对原始图片文件提供额外的支持功能，即支持对 RAW Bayer 数据进行重新处理。该支持功能允许相机管道处理之前捕获的 RAW 缓冲区和元数据（之前记录的整个帧），以生成新渲染的 YUV 或 JPEG 输出。
 
-需要使用提供的回调等到 `SurfaceView` 准备就绪：
 
-```kotlin
-val surfaceView = findViewById <SurfaceView>(...)
-surfaceView.holder.addCallback(object : SurfaceHolder.Callback {
-  override fun surfaceCreated(holder: SurfaceHolder) {
-    // You do not need to specify image format, and it will be considered of type PRIV
-    // Surface is now ready and you could use it as an output target for CameraSession
-  }
-  ...
-})
-```
 
-通过调用 [`SurfaceHolder.setFixedSize()`](https://developer.android.com/reference/android/view/SurfaceHolder?hl=zh-cn#setFixedSize(int, int)) 来强制 `SurfaceView` 与相机输出大小保持一致，也可以采用与 GitHub 上相机示例[通用模块](https://github.com/android/camera-samples/tree/3d1a254eb018a51ff39ae78d39a9e9e7942a027b/Common)中的 [`AutoFitSurfaceView`](https://github.com/android/camera-samples/blob/3d1a254eb018a51ff39ae78d39a9e9e7942a027b/Common/src/main/java/com/example/android/camera2/common/AutoFitSurfaceView.kt) 类似的方法，该方法设置绝对尺寸，考虑宽高比和可用空间，同时在触发 activity 更改时自动调整。
+### Zoom
 
-使用所需格式设置 [`ImageReader`](https://developer.android.com/reference/android/media/ImageReader?hl=zh-cn) 中的另一个 Surface 会更加容易，因为没有需要等待的回调：
+## Request Creation
 
-```kotlin
-val frameBufferCount = 3  // just an example, depends on your usage of ImageReader
-val imageReader = ImageReader.newInstance(
-    imageReaderSize.width, imageReaderSize.height, ImageFormat.YUV_420_888,
-    frameBufferCount)
-```
+## Stream Configuration
 
-使用 `ImageReader` 等阻塞目标缓冲区时，请在使用帧后将其舍弃：
 
-```kotlin
-imageReader.setOnImageAvailableListener({
-  val frame =  it.acquireNextImage()
-  // Do something with "frame" here
-  it.close()
-}, null)
-```
 
-`LEGACY` 硬件级别针对的是最低通用的设备。您可以为具有 `LIMITED` 硬件级别的设备中的其中一个输出目标 Surface 添加条件分支并使用 `RECORD` 大小，甚至可以将其增加到 `MAXIMUM` 大小（对于具有 `FULL` 硬件级别的设备）
+# 性能
 
+## Camera HAL3 Buffer Management APIs
 
+Android 10 引入了可选的[相机 HAL3](https://source.android.com/devices/camera/camera3?hl=zh-cn) 缓冲区管理 API，使您能够实现缓冲区管理逻辑，以便在相机 HAL 实现中达成不同的内存和拍摄延迟折衷权衡。
 
-## 4. 相机预览
+相机 HAL 需要 N 个请求（其中 N 等于[管道深度](https://developer.android.com/reference/android/hardware/camera2/CaptureResult.html?hl=zh-cn#REQUEST_PIPELINE_DEPTH)）在其管道中排队，但通常不需要同时使用所有 N 组输出缓冲区。
 
-Camera preview
+例如，在 HAL 管道中排队的请求可能有 8 个，但 HAL 只需使用管道最后阶段的 2 个请求的输出缓冲区。在 Android 9 及更低的设备上，当请求在 HAL 中排队时，相机框架会分配缓冲区，从而使 HAL 中有 6 组未使用的缓冲区。在 Android 10 中，相机 HAL3 缓冲区管理 API 允许分离输出缓冲区，从而释放 6 组缓冲区的空间。高端设备可以节省数百兆的内存，而对于低内存设备，也非常有用。
 
-Android 设备上的相机和相机预览并不总是相同的方向。摄像头都位于设备上的固定位置。当设备屏幕方向发生变化时，相机屏幕方向也会随之改变。
+图 1 为搭载 Android 9 及更低版本的设备的相机 HAL 接口示意图。
 
-相机应用通常假定设备的屏幕方向与相机预览的宽高比之间存在固定关系。当手机处于竖屏模式时，系统会假定相机预览的高度大于宽度。当手机（和相机）旋转为横向时，相机预览的宽度预计会大于高度。
+![buffer-management-9](assets/buffer-management-9.png)
 
-新外形规格（如[可折叠设备](https://developer.android.com/guide/topics/large-screens/learn-about-foldables?hl=zh-cn)）和显示模式（如[多窗口模式](https://developer.android.com/guide/topics/ui/multi-window?hl=zh-cn)和[多屏幕](https://developer.android.com/guide/topics/large-screens/multi-window-support?hl=zh-cn#multi-display_support)）对这些假设提出了挑战。可折叠设备在不改变方向的情况下更改显示屏尺寸和宽高比。多窗口模式会将相机应用限制为在屏幕的一部分显示，且无论设备屏幕方向如何，均会缩放相机预览。多屏幕模式支持使用辅助屏幕，而辅助屏幕的方向可能与主屏幕的方向不同。
+图 2 显示的是已实现相机 HAL3 缓冲区管理 API 的 Android 10 中的相机 HAL 接口。
 
+![buffer-management-10](assets/buffer-management-10.png)
 
 
-### 摄像头方向
 
-[Android 兼容性定义](https://source.android.com/compatibility/cdd?hl=zh-cn)中规定，摄像头图像传感器“必须朝向正确方向，以便摄像头的长度方向与屏幕的长度方向对齐。也就是说，当设备处于横向时，摄像头必须横向拍摄。无论设备的自然方向为何，此规则都适用；也就是说，它适用于以横屏为主的设备以及以竖屏为主的设备。
+### 实现缓冲区管理 API
 
-相机与屏幕的排列方式可最大限度地扩大相机应用中相机取景器的显示区域。此外，图像传感器通常以横向宽高比输出其数据，4:3 是最常见的。
+**requestStreamBuffers**
 
-![camera_preview_portrait_front_facing](assets/camera_preview_portrait_front_facing.png)
+通过 `requestStreamBuffers` 方法，调用方可以在一次调用中从多个输出流请求多个缓冲区，从而减少 HIDL IPC 调用的次数。不过，如果同时请求的缓冲区增加，调用所需的时间也会增加，这可能会导致从请求到结果的总延迟时间增加。此外，由于 `requestStreamBuffers` 调用已在相机服务中序列化，因此建议相机 HAL 使用专用的高优先级线程来请求缓冲区。
 
-摄像头传感器的自然屏幕方向为横向。在图 1 中，前置摄像头（摄像头与显示屏指向同一方向）的传感器相对于手机旋转了 270 度，以符合 Android 兼容性定义。
+如果缓冲区请求失败，相机 HAL 必须能够妥善处理非严重错误。缓冲区请求失败的常见原因以及相机 HAL 应如何处理这些失败。
 
-为了向应用公开传感器旋转，[camera2](https://developer.android.com/reference/android/hardware/camera2/package-summary?hl=zh-cn) API 包含一个 [`SENSOR_ORIENTATION`](https://developer.android.com/reference/android/hardware/camera2/CameraCharacteristics?hl=zh-cn#SENSOR_ORIENTATION) 常量。对于大多数手机和平板电脑，对于前置摄像头，设备报告的传感器方向为 270 度；对于后置摄像头，设备报告的传感器方向为 90 度（设备背面的视角），这使得传感器的长边与设备的长边对齐。笔记本电脑摄像头报告的传感器方向通常为 0 度或 180 度。
+- **应用与输出流断开连接**：这种情况属于非严重错误。相机 HAL 应针对任何以已断开连接的输出流为目标的拍摄请求发送 [`ERROR_REQUEST`](https://android.googlesource.com/platform/hardware/interfaces/+/master/camera/device/3.2/types.hal#583)，并做好正常处理后续请求的准备。
+- **超时**：如果应用在忙于执行密集型处理操作，同时保留某些缓冲区，则可能会发生超时情况。相机 HAL 应针对因超时错误而无法完成的拍摄请求发送 [`ERROR_REQUEST`](https://android.googlesource.com/platform/hardware/interfaces/+/master/camera/device/3.2/types.hal#583)，并做好正常处理后续请求的准备。
+- **相机框架正在准备新的输出流配置**：相机 HAL 应等到下一次 [`configureStreams`](https://android.googlesource.com/platform/hardware/interfaces/+/master/camera/device/3.2/ICameraDeviceSession.hal#167) 调用完成后，再重新调用 `requestStreamBuffers`。
+- **相机 HAL 已达到其[缓冲区限制](https://android.googlesource.com/platform/hardware/interfaces/+/master/camera/device/3.2/types.hal#382)（`maxBuffers` 字段）**：相机 HAL 应等到返回输出流的至少一个缓冲区后，再重新调用 `requestStreamBuffers`。
 
-图中的前置摄像头，摄像头传感器生成的图像缓冲区如下所示：
 
-![camera_sensor_portrait_rotated_90](assets/camera_sensor_portrait_rotated_90.png)
 
-图片必须逆时针旋转 270 度，以便预览的方向与设备的屏幕方向一致：
+**returnStreamBuffers**
 
-![camera_sensor_portrait_without_coordinates](assets/camera_sensor_portrait_without_coordinates.png)
+**signalStreamFlush**
 
-后置摄像头将生成方向与上述缓冲区相同的图像缓冲区，但 `SENSOR_ORIENTATION` 为 90 度。因此，缓冲区会顺时针旋转 90 度。
 
 
+### 实现缓冲区管理 API 的行为变更
 
-### 设备旋转
+使用缓冲区管理 API 去实现缓冲区管理逻辑时，请考虑相机和相机 HAL 实现可能会发生的行为变更：
 
-设备旋转度是指设备从其自然方向旋转的角度数。例如，手机处于横屏模式时，设备会旋转 90 度或 270 度，具体取决于旋转方向。
+- **拍摄请求到达相机 HAL 的速度更快、频率更高**：如果不使用缓冲区管理 API，相机框架会先为每个拍摄请求请求输出缓冲区，然后再向相机 HAL 发送拍摄请求。而使用缓冲区管理 API 后，相机框架无需再等待缓冲区请求完成，因此可以更早地向相机 HAL 发送拍摄请求。
 
-除了传感器方向的角度之外，相机传感器图像缓冲区还必须与设备旋转的角度相同，才能使相机预览垂直显示。
+  此外，如果不使用缓冲区管理 API，当拍摄请求的其中一个输出流达到 HAL 一次可容纳的最大缓冲区数（此值由相机 HAL 在 `configureStreams` 调用的返回值中的 `HalStream::maxBuffers` 字段中指定）时，相机框架会停止发送拍摄请求。如果使用缓冲区管理 API，此限制行为不再存在，而且如果 HAL 中排队的拍摄请求过多，相机 HAL 实现不得接受 `processCaptureRequest` 调用。
 
+- **`requestStreamBuffers` 调用延迟变化显著**：导致 `requestStreamBuffers` 调用所需时间超过平均时间的原因有很多。例如：
 
+  - 对于新建输出流的前几个缓冲区而言，调用所需时间可能较长，因为设备需要分配内存。
+  - 预期延迟时间会按每次调用时请求的缓冲区数成比例增加。
+  - 应用正在保留缓冲区并忙于处理操作。这可能会导致缓冲区请求因缓冲区不足或 CPU 繁忙而降速或超时。
 
-### 方向计算
 
-相机预览的正确屏幕方向会将传感器方向和设备旋转考虑在内。
 
+### 缓冲区管理策略
 
+缓冲区管理 API 支持实现各种类型的缓冲区管理策略。以下是一些示例：
 
-### 宽高比
+- **向后兼容**：HAL 在调用 `processCaptureRequest` 期间为拍摄请求请求缓冲区。此策略不会节省任何内存，但可用作缓冲区管理 API 的第一个实现，几乎不需要更改现有相机 HAL 的代码。
+- **最大限度地节省内存**：相机 HAL 仅在需要填充缓冲区之前立即请求输出缓冲区。此策略可最大限度地节省内存。此策略的潜在弊端是，当完成缓冲区请求所需的时间过长时，相机管道会出现更多卡顿。
+- **已缓存**：相机 HAL 缓存少许缓冲区，以降低缓冲区请求速度偶尔较慢时受到影响的可能性。
 
-当设备屏幕方向发生变化时，当可折叠设备折叠和展开时、在多窗口环境中调整窗口大小时，以及在辅助显示屏上打开应用时，显示屏宽高比也会发生变化。
+相机 HAL 可针对特定使用情形采用不同的策略，例如，对于使用大量内存的使用情形采用“最大限度地节省内存”策略，对于其他使用情形则采用“向后兼容”策略。
 
-当界面会动态改变方向（无论是否设备改变方向）时，相机传感器图像缓冲区必须朝向和缩放，以匹配取景器界面元素的方向和宽高比。
 
-在新外形规格的设备中，或者在多窗口或多显示屏环境中，如果您的应用假定相机预览的屏幕方向与设备相同（纵向或横向），则预览可能会朝向不正确和/或未正确缩放。
 
 
 
-### 插入人像模式
+## Session Parameters
 
-不支持多窗口模式 ([`resizeableActivity="false"`](https://developer.android.com/guide/topics/manifest/application-element?hl=zh-cn#resizeableActivity)) 且限制其屏幕方向（[`screenOrientation="portrait"`](https://developer.android.com/guide/topics/manifest/activity-element?hl=zh-cn#screen) 或 [`screenOrientation="landscape"`](https://developer.android.com/guide/topics/manifest/activity-element?hl=zh-cn#screen)）的相机应用可以在大屏设备上以边衬区人像模式放置，以便正确定位相机预览。
+## Single Producer, Multiple Consumer
 
 
 
-### 相机取景器
+# 相机功能
 
-CameraViewfinder
+## 10-Bit Camera Output
 
-[CameraViewfinder](https://developer.android.com/reference/androidx/camera/viewfinder/package-summary?hl=zh-cn) 库提供了工具来简化相机预览的创建过程。可以使用 [`CameraViewfinder`](https://developer.android.com/reference/androidx/camera/viewfinder/CameraViewfinder?hl=zh-cn) widget 来显示 Camera2 的摄像头画面，而不是直接使用 [`Surface`](https://developer.android.com/reference/android/view/Surface?hl=zh-cn)。
+设备要有 10-bit 或更高的 camera sensor 和对应的 ISP 支持。
 
-`CameraViewfinder` 在内部使用 `TextureView` 或 `SurfaceView` 显示相机画面，并对其应用必要的转换以正确显示取景器。这涉及到更正其宽高比、缩放比例和旋转。
 
-从 `CameraViewfinder` 对象请求 Surface，需要创建一个 [`ViewfinderSurfaceRequest`](https://developer.android.com/reference/androidx/camera/viewfinder/ViewfinderSurfaceRequest?hl=zh-cn)。此请求包含对 [`CameraCharacteristics`](https://developer.android.com/reference/kotlin/android/hardware/camera2/CameraCharacteristics?hl=zh-cn) 中的 Surface 分辨率和相机设备信息的要求。
 
-调用 [`requestSurfaceAsync()`](https://developer.android.com/reference/androidx/camera/viewfinder/CameraViewfinder?hl=zh-cn#requestSurfaceAsync(androidx.camera.viewfinder.ViewfinderSurfaceRequest)) 会将请求发送到 surface provider（可以是 `TextureView` 或 `SurfaceView`），并获得 `ListenableFuture` 为 `Surface`。
+**验证**
 
-调用 [`markSurfaceSafeToRelease()`](https://developer.android.com/reference/kotlin/androidx/camera/viewfinder/ViewfinderSurfaceRequest?hl=zh-cn#markSurfaceSafeToRelease()) 会通知 surface provider：不需要 Surface，相关资源可以释放。
+三个阶段的验证。
 
+- [测试 API 功能正确性](https://source.android.com/docs/core/camera/10-bit-camera-output?hl=zh-cn#test-api-functional-correctness)
+- [比较原生相机和第三方应用](https://source.android.com/docs/core/camera/10-bit-camera-output?hl=zh-cn#compare-native-third-party-app)
+- [比较标准动态范围和高动态范围](https://source.android.com/docs/core/camera/10-bit-camera-output?hl=zh-cn#compare-sdr-hdr)
 
 
-### SurfaceView
 
-如果预览不需要处理且不是动画形式，则 [`SurfaceView`](https://developer.android.com/reference/android/view/SurfaceView?hl=zh-cn) 是一种创建相机预览的简单方法。
+## Camera Bokeh
 
-`SurfaceView` 会根据传感器方向和设备旋转情况，自动旋转相机传感器图像缓冲区以匹配显示屏方向。不过，图片缓冲区会进行缩放以适应 `SurfaceView` 尺寸，而不考虑宽高比。
 
-必须确保图片缓冲区的宽高比与 `SurfaceView` 的宽高比一致，这可以通过在组件的 [`onMeasure()`](https://developer.android.com/reference/android/view/SurfaceView?hl=zh-cn#onMeasure(int, int)) 方法中缩放 `SurfaceView` 的内容来实现：
 
-```java
-@Override
-void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-    int width = MeasureSpec.getSize(widthMeasureSpec);
-    int height = MeasureSpec.getSize(heightMeasureSpec);
+## Concurrent Camera Streaming
 
-    int relativeRotation = computeRelativeRotation(characteristics, surfaceRotationDegrees);
+Android 允许设备支持摄像头设备的并发流式传输。例如，这可以让设备同时运行前置摄像头和后置摄像头。
 
-    if (previewWidth > 0f && previewHeight > 0f) {
 
-        /* Scale factor required to scale the preview to its original size on the x-axis. */
-        float scaleX = (relativeRotation % 180 == 0)
-                       ? (float) width / previewWidth
-                       : (float) width / previewHeight;
 
-        /* Scale factor required to scale the preview to its original size on the y-axis. */
-        float scaleY = (relativeRotation % 180 == 0)
-                       ? (float) height / previewHeight
-                       : (float) height / previewWidth;
+**资源分配问题**
 
-        /* Scale factor required to fit the preview to the SurfaceView size. */
-        float finalScale = Math.min(scaleX, scaleY);
+如果相机 HAL 宣传支持相机设备的并发操作，它们可能会遇到资源分配问题，特别是在手机上有足够的图像信号处理器 (ISP) 资源来同时传输前置和后置（或其他）相机的情况下，但没有充分发挥其能力。在这种情况下，相机HAL必须为每个相机设备分配有限的硬件资源。
 
-        setScaleX(1 / scaleX * finalScale);
-        setScaleY(1 / scaleY * finalScale);
-    }
-    setMeasuredDimension(width, height);
-}
-```
+示例问题场景：
 
+- 摄像头 ID `0` 是一个由广角摄像头和超广角摄像头组成的逻辑摄像头，其中每个摄像头都占用一个 ISP 资源。
+- 摄像头 ID `1` 是占用一个 ISP 资源的摄像头。
 
+设备（手机）有两个 ISP。如果打开摄像头 ID `0` 并配置会话，则相机 HAL 可能会预留两个 ISP 来满足同时使用超广角和广角摄像头的情况。
 
-### TextureView
+如果是这种情况，前置摄像头 (ID `1`) 就无法配置任何数据流，因为两个 ISP 都正在使用中。
 
-[`TextureView`](https://developer.android.com/reference/android/view/TextureView?hl=zh-cn) 的性能低于 `SurfaceView`，但执行的工作更多，但 `TextureView` 可让您最大限度地控制相机预览。
 
-`TextureView` 根据传感器方向旋转传感器图像缓冲区，但不处理设备旋转或预览缩放。
 
-缩放和旋转可以在[矩阵](https://developer.android.com/reference/android/graphics/Matrix?hl=zh-cn)转换中编码。如需了解如何正确缩放和旋转 `TextureView`，[在相机应用中支持可调整大小的 Surface](https://developer.android.com/codelabs/android-camera2-preview?hl=zh-cn)
+为了解决此问题，相机框架需要在配置会话之前将摄像头 ID `0` 和 `1` 都打开，以便向相机 HAL 提供有关如何分配资源的提示（因为它现在要求执行并发操作）。 但是，这可能会导致功能受限，例如，缩放功能可能无法处理完整的缩放范围比例（因为切换实体摄像头 ID 可能会带来问题）。
 
+- 要求在执行并发摄像头操作时，相机框架必须先打开摄像头设备 (`@3.2::ICameraDevice::open`)，然后再配置摄像头设备上的任何会话。这将使相机提供程序能够相应地分配资源。
+- 为了解决无法处理完整缩放范围比例的问题，请确保在同时使用摄像头时，相机应用只能将 `ZOOM_RATIO` 控制设置为 1 倍至 `MAX_DIGITAL_ZOOM`，而不是完整的 `ZOOM_RATIO_RANGE`（这样可以防止因内部切换实体摄像头而需要更多 ISP）。
 
 
-### 相对旋转
 
-摄像头传感器的相对旋转角度是指将摄像头传感器输出与设备方向对齐所需的旋转量。
+## Camera Extension
 
-`SurfaceView` 和 `TextureView` 等组件使用相对旋转角度来确定预览图片的 x 和 y 缩放比例。它还可用于指定传感器图像缓冲区的旋转。
+设备制造商可以通过 OEM 供应商库提供的相机扩展接口向第三方开发者提供焦外成像、夜间模式和 HDR 等扩展。开发者可以使用 [Camera2 Extensions API](https://developer.android.com/training/camera2/extensions-api?hl=zh-cn) 和 [CameraX Extensions API](https://developer.android.com/training/camerax/extensions-api?hl=zh-cn) 访问在 OEM 供应商库中实现的扩展。
 
-您可以使用 [`CameraCharacteristics`](https://developer.android.com/reference/android/hardware/camera2/CameraCharacteristics?hl=zh-cn) 和 [`Surface`](https://developer.android.com/reference/android/view/Surface?hl=zh-cn) 类计算摄像头传感器的相对旋转角度。
+![oem-camera-extensions-architecture](assets/oem-camera-extensions-architecture.png)
 
 
 
-### 窗口指标
 
-不应使用屏幕尺寸来确定相机取景器的尺寸；相机应用可能会在屏幕的某一部分运行，在移动设备上处于多窗口模式，或者在 ChromeOS 中处于释放模式。
 
+## Camera Preview Stabilization
 
 
-### 旋转 180 度
 
-设备 180 度旋转（例如，从自然屏幕方向转为自然屏幕方向倒置）不会触发 [`onConfigurationChanged()`](https://developer.android.com/reference/android/app/Activity?hl=zh-cn#onConfigurationChanged(android.content.res.Configuration)) 回调。因此，相机预览可能会上下颠倒。
+## External USB Cameras
 
-如需检测 180 度旋转，请实现 [`DisplayListener`](https://developer.android.com/reference/android/hardware/display/DisplayManager.DisplayListener?hl=zh-cn)，并通过在 [`onDisplayChanged()`](https://developer.android.com/reference/android/hardware/display/DisplayManager.DisplayListener?hl=zh-cn#onDisplayChanged(int)) 回调中调用 [`Display#getRotation()`](https://developer.android.com/reference/android/view/Display?hl=zh-cn#getRotation()) 来检查设备旋转。
+## High Dynamic Range Modes
 
+## HEIF Imaging
 
+## Monochrome Cameras
 
-### 专属资源
+## Motion Tracking
 
-在 Android 10 之前，只有多窗口环境中最顶层的可见 activity 处于 `RESUMED` 状态。这会让用户感到困惑，因为系统不会提供关于恢复了哪个 activity 的指示。
+## Multi-Camera Support
 
-Android 10（API 级别 29）引入了多项恢复模式，其中所有可见的 activity 都处于 `RESUMED` 状态。例如，如果透明 activity 位于 activity 之上或该 activity 不可聚焦（例如处于画中画模式），可见的 activity 仍可进入 `PAUSED` 状态（请参阅[画中画支持](https://developer.android.com/guide/topics/ui/picture-in-picture?hl=zh-cn)）。
+## Torch Strength Control
 
-使用摄像头、麦克风或者 API 级别 29 或更高级别的任何独占资源或单例资源的应用必须支持多项恢复。例如，如果三个已恢复的 activity 想要使用相机，则只有一个可以访问此专属资源。每个 activity 都必须实现 [`onDisconnected()`](https://developer.android.com/reference/android/hardware/camera2/CameraDevice.StateCallback?hl=zh-cn#onDisconnected(android.hardware.camera2.CameraDevice)) 回调，以便随时了解优先级较高的 activity 对相机的抢占访问。
+Android 13 或更高版本的设备，Android 框架针对手电筒强度提供了多级控制。
 
-[Multi-resume](https://source.android.com/devices/tech/display/multi_display/multi-resume).
 
 
+## Ultra HDR
 
-## 5. HDR 视频拍摄
+[Ultra HDR 图片拍摄实现示例](https://github.com/android/platform-samples/pull/56)
 
-HDR Video capture
 
-与标准动态范围 (SDR) 相比，HDR 提供了更广泛的颜色范围，并增加了亮度分量的动态范围（从当前的 100 cd/m2 增加到 1,000 cd/m2）。这样，视频画质就会更接近现实生活，色彩更丰富，高光更亮，阴影更暗。
 
-HDR 视频拍摄功能的应用， [Camera2Video 示例](https://github.com/android/camera-samples/tree/main/Camera2Video)
+## Wide Gamut Capture
 
-### HDR 拍摄架构
+Android 14 或更高版本的设备，Android 支持 Display P3 广色域拍摄。设备可以使用 `ImageReader` 类拍摄 JPEG 格式的广色域色彩图片，而无需使用 [10 位 HDR](https://source.android.com/docs/core/camera/10-bit-camera-output?hl=zh-cn)。借助此功能，设备可以通过 `SessionConfiguration` 中的 [`setColorSpace`](https://developer.android.com/reference/android/hardware/camera2/params/SessionConfiguration?hl=zh-cn#setColorSpace(android.graphics.ColorSpace.Named)) 参数请求向 Camera2 框架请求广色域空间中的相机拍摄。
 
-![hdr_capture_architecture_diagram](assets/hdr_capture_architecture_diagram.png)
 
-当相机设备捕获 HDR 中的帧时，Camera2 框架会分配一个缓冲区来存储处理后的相机传感器输出。如果 HDR 配置文件需要，它还会附加相应的 HDR 元数据。然后，Camera2 框架会针对 [`CaptureRequest`](https://developer.android.com/training/camera2/capture-sessions-requests?hl=zh-cn#repeating-capture-requests) 中引用的输出 surface（例如显示或视频编码器）将填充的缓冲区加入队列。
 
 
-
-检查 HDR 支持
-
-### 设置 HDR capture
-
-确保设备支持 HDR 后，设置应用从相机 capture raw HDR video stream。使用 `setDynamicRangeProfile()` 为流的 `OutputConfiguration` 提供设备支持的 HDR 配置文件，然后在创建时将其传递给 `CameraCaptureSession` 。
-
-代码示例中， `setupSessionDynamicRangeProfile()` 首先检查设备是否运行 Android 13。然后，它使用设备支持的 HDR 配置文件将 `CameraCaptureSession` 设置为 `OutputConfiguration`。
-
-```kotlin
-  /**
-  * Creates a [CameraCaptureSession] with a dynamic range profile.
-  */
-  private fun setupSessionWithDynamicRangeProfile(
-          dynamicRange: Long,
-          device: CameraDevice,
-          targets: List
-```
-
-当您的相机应用程序初始化相机时，它会发送重复的 `CaptureRequest` 来预览录制内容：
-
-```kotlin
-session.setRepeatingRequest(previewRequest, null, cameraHandler)
-```
-
-开始视频录制：
-
-```kotlin
-// Start recording repeating requests, which stops the ongoing preview
-//  repeating requests without having to explicitly call
-//  `session.stopRepeating`
-session.setRepeatingRequest(recordRequest,
-        object : CameraCaptureSession.CaptureCallback() {
-    override fun onCaptureCompleted(session: CameraCaptureSession,
-            request: CaptureRequest, result: TotalCaptureResult) {
-        if (currentlyRecording) {
-            encoder.frameAvailable()
-        }
-    }
-}, cameraHandler)
-```
-
-
-
-### HDR camera stream 编码
-
-[`EncoderWrapper.kt`](https://github.com/android/camera-samples/blob/main/Camera2Video/app/src/main/java/com/example/android/camera2/video/EncoderWrapper.kt)
-
-如需对 HDR 相机流进行编码并将文件写入磁盘，请使用 [`MediaCodec`](https://developer.android.com/reference/android/media/MediaCodec?hl=zh-cn#createPersistentInputSurface())。
-
-首先，获取 [`OutputSurface`](https://developer.android.com/reference/kotlin/androidx/camera/core/impl/OutputSurface?hl=zh-cn)，它映射到存储原始视频数据的缓冲区。对于 `MediaCodec`，请使用 [`createInputSurface()`](https://developer.android.com/reference/android/media/MediaCodec?hl=zh-cn#createInputSurface())。
-
-如需初始化 `MediaCodec`，应用必须创建一个 [`MediaFormat`](https://developer.android.com/reference/android/media/MediaFormat?hl=zh-cn)，其中包含指定的编解码器配置文件、颜色空间、颜色范围和传递函数：
-
-```kotlin
-val mimeType = when {
-    dynamicRange == DynamicRangeProfiles.STANDARD -> MediaFormat.MIMETYPE_VIDEO_AVC
-    dynamicRange < DynamicRangeProfiles.PUBLIC_MAX ->
-            MediaFormat.MIMETYPE_VIDEO_HEVC
-    else -> throw IllegalArgumentException("Unknown dynamic range format")
-}
-
-val codecProfile = when {
-    dynamicRange == DynamicRangeProfiles.HLG10 ->
-            MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10
-    dynamicRange == DynamicRangeProfiles.HDR10 ->
-            MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10HDR10
-    dynamicRange == DynamicRangeProfiles.HDR10_PLUS ->
-            MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10HDR10Plus
-    else -> -1
-}
-// Failing to correctly set color transfer causes quality issues
-// for example, washout and color clipping
-val transferFunction = when (codecProfile) {
-    MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10 ->
-            MediaFormat.COLOR_TRANSFER_HLG
-    MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10HDR10 ->
-            MediaFormat.COLOR_TRANSFER_ST2084
-    MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10HDR10Plus ->
-            MediaFormat.COLOR_TRANSFER_ST2084
-    else -> MediaFormat.COLOR_TRANSFER_SDR_VIDEO
-}
-
-val format = MediaFormat.createVideoFormat(mimeType, width, height)
-
-// Set some properties.  Failing to specify some of these can cause the MediaCodec
-// configure() call to throw an exception.
-format.setInteger(MediaFormat.KEY_COLOR_FORMAT,
-        MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-format.setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
-format.setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
-format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, IFRAME_INTERVAL)
-
-if (codecProfile != -1) {
-    format.setInteger(MediaFormat.KEY_PROFILE, codecProfile)
-    format.setInteger(MediaFormat.KEY_COLOR_STANDARD,
-            MediaFormat.COLOR_STANDARD_BT2020)
-    format.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
-    format.setInteger(MediaFormat.KEY_COLOR_TRANSFER, transferFunction)
-    format.setFeatureEnabled(MediaCodecInfo.CodecCapabilities.FEATURE_HdrEditing,
-            true)
-}
-
-mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-```
-
-
-
-### HDR 格式
-
-具有 10-bit 输出功能的相机设备必须支持 HLG10 以进行 HDR 拍摄和[播放](https://source.android.com/devices/tech/display/hdr?hl=zh-cn)。
-
-可用的 HDR 格式及其用于拍摄 HDR 视频的功能。
-
-![HDR-format](assets/HDR-format.png)
-
-
-
-## 6. Multi-Camera API
-
-多摄像头用例与特定硬件配置紧密相关。
-
-典型用例包括：
-
-- **变焦**：根据剪裁区域或所需焦距切换摄像头。
-- **深度**：使用多个摄像头构建深度图。
-- **焦外成像**：使用推断的深度信息来模拟类似数码单反相机的窄对焦范围。
-
-
-
-### 逻辑摄像头和物理摄像头的区别
-
-解多摄像头 API，还需要了解逻辑摄像头与物理摄像头之间的区别。作为参考，假设有一台配有三个后置摄像头的设备。在此示例中，三个后置摄像头中的每一个都被视为物理摄像头。逻辑摄像头是指由两个或更多个物理摄像头组成的分组。逻辑摄像头的输出可以是来自某个底层物理摄像头的流，也可以是同时来自多个底层物理摄像头的融合流。无论采用哪种方式，数据流都由相机硬件抽象层 (HAL) 进行处理。
-
-*从 Android 9 开始，三方开发者拥有对所有相机设备的完整开发者访问权限*
-
-![multi-camera-2](assets/multi-camera-2.png)
-
-逻辑摄像头提供的内容完全取决于 OEM 的相机 HAL 实现。例如，Pixel 3 等设备以如下方式实现其逻辑摄像头：根据请求的焦距和剪裁区域选择其中一个物理摄像头。
-
-
-
-**multi-camera API**
-
-**Multiple streams simultaneously**
-
-
-
-### 使用多个物理摄像头创建 session
-
-在支持多摄像头的设备上使用物理摄像头时，请打开单个 `CameraDevice`（逻辑摄像头），并在单个会话中与其互动。使用 API 级别 28 中的新增 API `CameraDevice.createCaptureSession(SessionConfiguration config)` 创建单个会话。会话配置具有多种输出配置，每种输出配置都有一组输出目标，以及（可选）所需的物理摄像头 ID。
-
-![multi-camera-3](assets/multi-camera-3.png)
-
-获请求具有与其关联的输出目标。框架根据连接的输出目标确定将请求发送到哪个物理（或逻辑）相机。如果输出目标对应于作为输出配置与物理摄像头 ID 一起发送的某个输出目标，则该物理摄像头会接收并处理请求。
-
-
-
-使用一对物理摄像头
-
-
-
-### Zoom 用例
-
-将物理摄像机合并到单个流中，用户可以在不同的物理摄像头之间切换以体验不同的视野，从而有效捕获不同的“缩放级别”。
-
-首先选择一对物理摄像头以允许用户在之间进行切换。可以选择提供最小和最大焦距的一对摄像头。
-
-```kotlin
-fun findShortLongCameraPair(manager: CameraManager, facing: Int? = null): DualCamera? {
-
-    return findDualCameras(manager, facing).map {
-        val characteristics1 = manager.getCameraCharacteristics(it.physicalId1)
-        val characteristics2 = manager.getCameraCharacteristics(it.physicalId2)
-
-        // Query the focal lengths advertised by each physical camera
-        val focalLengths1 = characteristics1.get(
-            CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS) ?: floatArrayOf(0F)
-        val focalLengths2 = characteristics2.get(
-            CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS) ?: floatArrayOf(0F)
-
-        // Compute the largest difference between min and max focal lengths between cameras
-        val focalLengthsDiff1 = focalLengths2.maxOrNull()!! - focalLengths1.minOrNull()!!
-        val focalLengthsDiff2 = focalLengths1.maxOrNull()!! - focalLengths2.minOrNull()!!
-
-        // Return the pair of camera IDs and the difference between min and max focal lengths
-        if (focalLengthsDiff1 < focalLengthsDiff2) {
-            Pair(DualCamera(it.logicalId, it.physicalId1, it.physicalId2), focalLengthsDiff1)
-        } else {
-            Pair(DualCamera(it.logicalId, it.physicalId2, it.physicalId1), focalLengthsDiff2)
-        }
-
-        // Return only the pair with the largest difference, or null if no pairs are found
-    }.maxByOrNull { it.second }?.first
-}
-```
-
-合理的架构是设置两个 [`SurfaceViews`](https://developer.android.com/reference/android/view/SurfaceView?hl=zh-cn) - 每个数据流各一个。这些 `SurfaceViews` 会根据用户互动进行交换，因此在任何给定时间都只有一个可见。
-
-以下代码展示了如何打开逻辑摄像头、配置摄像头输出、创建摄像头会话以及启动两个预览流：
-
-```kotlin
-val cameraManager: CameraManager = ...
-
-// Get the two output targets from the activity / fragment
-val surface1 = ...  // from SurfaceView
-val surface2 = ...  // from SurfaceView
-
-val dualCamera = findShortLongCameraPair(manager)!!
-val outputTargets = DualCameraOutputs(
-    null, mutableListOf(surface1), mutableListOf(surface2))
-
-// Here you open the logical camera, configure the outputs and create a session
-createDualCameraSession(manager, dualCamera, targets = outputTargets) { session ->
-
-  // Create a single request which has one target for each physical camera
-  // NOTE: Each target receive frames from only its associated physical camera
-  val requestTemplate = CameraDevice.TEMPLATE_PREVIEW
-  val captureRequest = session.device.createCaptureRequest(requestTemplate).apply {
-    arrayOf(surface1, surface2).forEach { addTarget(it) }
-  }.build()
-
-  // Set the sticky request for the session and you are done
-  session.setRepeatingRequest(captureRequest, null, null)
-}
-```
-
-只需提供一个界面，以便用户在两个 surface 之间切换，例如点按一个按钮或点按两次 `SurfaceView`。您甚至可以执行某种形式的场景分析，并自动在两个数据流之间切换。
-
-
-
-### 镜头畸变
-
-所有镜头都会产生失真。可使用 [`CameraCharacteristics.LENS_DISTORTION`](https://developer.android.com/reference/android/hardware/camera2/CameraCharacteristics?hl=zh-cn#LENS_DISTORTION)查询镜头产生的失真率。对于逻辑摄像头，失真很小，并且您的应用可以根据来自摄像头的帧多使用或减少使用帧。对于物理摄像头，其镜头配置可能截然不同，尤其是在广角镜头上。
-
-某些设备可通过 [`CaptureRequest.DISTORTION_CORRECTION_MODE`](https://developer.android.com/reference/android/hardware/camera2/CaptureRequest?hl=zh-cn#DISTORTION_CORRECTION_MODE) 实现自动失真校正。大多数设备，失真校正默认处于开启状态。
-
-此模式下设置拍摄请求可能会影响相机可产生的帧速率。您可以选择仅针对静态图片拍摄设置失真校正。
-
-
-
-# Camera extensions
-
-[Camera2](https://developer.android.com/training/camera2?hl=zh-cn) 和 [CameraX](https://developer.android.com/training/camerax?hl=zh-cn) 提供 Extensions API，可让应用访问供应商在 Android 设备实现的以下扩展：
-
-- **Auto：**根据当前场景调整扩展模式。例如，在光线昏暗的场景下，自动切换到“夜间”模式以拍照。对于人像照片，自动应用“脸部照片修复”或“焦外成像”功能。
-- **Bokeh：**虚化。锐化前景拍摄正文，并模糊处理背景。 用于拍摄背景柔和失焦的人物肖像。
-- **Face Retouch：**美化皮肤纹理、眼下色调等。
-- **HDR（High Dynamic Range）**：扩大曝光范围，使照片更加鲜艳。在 HDR 模式下，相机会拍摄多张具有各种曝光值的照片，并将其合并为一张。
-- **Night**：在光线较暗的环境中提亮照片。相机会拍摄多张各种曝光值的照片，然后将它们合并为一张。此过程可能需要几秒钟的时间，在相机拍照期间，用户应保持手机静止不动。
-
-Camera2 和 CameraX 扩展仅适用于预览和照片拍摄，不适用于视频拍摄。
-
-
-
-## Extensions architecture
-
-![camera2-camera-extensions-architecture](assets/camera2-camera-extensions-architecture.png)
-
-应用可以通过 Camera2 API 使用扩展。Camera2 API 提供了查询可用扩展、配置扩展相机会话以及与相机扩展 OEM 库通信的方法。
-
-
-
-## CameraExtensionSession
-
-Camera2 Extensions API 创建 [`CameraExtensionSession`](https://developer.android.com/reference/android/hardware/camera2/CameraExtensionSession?hl=zh-cn)，为现有 Camera2 应用使用夜间拍摄模式。
-
-```kotlin
-private val captureCallbacks = object : CameraExtensionSession.ExtensionCaptureCallback() {
-    // Implement Capture Callbacks
-}
-private val extensionSessionStateCallback = object : CameraExtensionSession.StateCallback() {
-    override fun onConfigured(session: CameraExtensionSession) {
-        cameraExtensionSession = session
-        try {
-            val captureRequest =
-                cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
-                    addTarget(previewSurface)
-                }.build()
-            session.setRepeatingRequest(
-                captureRequest,
-                Dispatchers.IO.asExecutor(),
-                captureCallbacks
-            )
-        } catch (e: CameraAccessException) {
-            Snackbar.make(
-                previewView,
-                "Failed to preview capture request",
-                Snackbar.LENGTH_SHORT
-            ).show()
-            requireActivity().finish()
-        }
-    }
-
-    override fun onClosed(session: CameraExtensionSession) {
-        super.onClosed(session)
-        cameraDevice.close()
-    }
-
-    override fun onConfigureFailed(session: CameraExtensionSession) {
-        Snackbar.make(
-            previewView,
-            "Failed to start camera extension preview",
-            Snackbar.LENGTH_SHORT
-        ).show()
-        requireActivity().finish()
-    }
-}
-
-private fun startExtensionSession() {
-    val outputConfig = arrayListOf(
-        OutputConfiguration(stillImageReader.surface),
-        OutputConfiguration(previewSurface)
-    )
-    val extensionConfiguration = ExtensionSessionConfiguration(
-        CameraExtensionCharacteristics.EXTENSION_NIGHT,
-        outputConfig,
-        Dispatchers.IO.asExecutor(),
-        extensionSessionStateCallback
-    )
-    cameraDevice.createExtensionSession(extensionConfiguration)
-}
-```
 

@@ -4,6 +4,8 @@
 
 [ExoPlayer](https://exoplayer.dev/)
 
+[Video processing with WebCodecs  | Chrome for Developers](https://developer.chrome.com/docs/web-platform/best-practices/webcodecs)
+
 
 
 实现音视频播放功能，使用 Jetpack Media3 库中的 ExoPlayer

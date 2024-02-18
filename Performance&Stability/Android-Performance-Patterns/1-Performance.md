@@ -1,3 +1,5 @@
+[Android Performance Patterns - YouTube](https://www.youtube.com/playlist?list=PLWz5rJ2EKKc9CBxr3BVjPTPoDPLdPIFCE)
+
 [App performance guide | Android Developers](https://developer.android.com/topic/performance/overview)
 
 [Category: Android:Performance - 胡凯 (kesenhoo.github.io)](https://kesenhoo.github.io/blog/categories/android-performance/)
@@ -5,8 +7,6 @@
 [Android性能优化典范——渲染篇. 2015年年初，Google官方在Youtube上发布了一系列的Android性… | by seanutf | Medium](https://medium.com/@seanutf/android性能优化典范-渲染篇-c73b63536d58)
 
 [Performance - MAD Skills - YouTube](https://www.youtube.com/playlist?list=PLWz5rJ2EKKc9T9fxvsrbzg_mflg2EYLZk)
-
-
 
 
 

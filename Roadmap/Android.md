@@ -9,6 +9,8 @@ git clone https://ghproxy.com/
 - 内存
   - [Android内存优化之OOM - 胡凯 (kesenhoo.github.io)](https://kesenhoo.github.io/android-performance-oom/)
 
+[SMP Primer for Android](https://developer.android.com/training/articles/smp.html?hl=zh-cn#dataraces)
+
 
 
 Language
@@ -57,9 +59,9 @@ Blog
 
 [Gracker/Rss-IT: 这个项目记录了个人订阅的一些科技人的Blog地址,欢迎大家推荐,一起来完善! 欢迎自荐...... (github.com)](https://github.com/Gracker/Rss-IT)
 
-
-
 [kesenhoo (HuKai) (github.com)](https://github.com/kesenhoo)
+
+
 
 
 
